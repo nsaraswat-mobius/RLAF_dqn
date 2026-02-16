@@ -1,0 +1,128 @@
+name: Decay Modeling
+description: Fits exponential and half-life decay models to numeric columns in a Parquet dataset downloaded from a URL.
+inputs:
+  - {name: input_url, type: String, description: 'URL of the Parquet file on CDN'}
+outputs:
+  - {name: output_csv, type: Dataset, description: 'Output CSV file path for the parameters'}
+implementation:
+  container:
+    image: python:3.9
+    command:
+      - sh
+      - -c
+      - |
+        python3 -m pip install --quiet pandas numpy scipy scikit-learn pyarrow requests
+        cat << 'EOF' > decay_task.py
+        import pandas as pd
+        import numpy as np
+        import argparse
+        import os
+        import requests
+        from scipy.optimize import curve_fit
+        from sklearn.metrics import r2_score
+
+        def download_file(url, local_path):
+            print(f"Downloading {url} to {local_path}...")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            with open(local_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        def detect_datetime_column(df):
+            # Try typed datetime columns first
+            datetime_cols = df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns
+            if len(datetime_cols) > 0:
+                return datetime_cols[0]
+
+            # Try converting object columns
+            for col in df.columns:
+                if df[col].dtype == 'object':
+                    try:
+                        # Sample first few non-null to check format speed
+                        sample = df[col].dropna().head()
+                        if len(sample) > 0:
+                            pd.to_datetime(sample, errors="raise")
+                            df[col] = pd.to_datetime(df[col], errors="coerce")
+                            return col
+                    except Exception:
+                        continue
+            raise ValueError("No datetime column found.")
+
+        def detect_numeric_columns(df, exclude_cols):
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            return [col for col in numeric_cols if col not in exclude_cols]
+
+        def model_exponential(t, A, lambda_):
+            return A * np.exp(-lambda_ * t)
+
+        def model_half_life(t, A, half_life):
+            if half_life == 0: 
+                return 0
+            return A * np.power(0.5, t / half_life)
+
+        def fit_decay_parameters(df, time_col, numeric_cols):
+            results = []
+            start_time = df[time_col].min()
+            df['__days_passed__'] = (df[time_col] - start_time).dt.total_seconds() / 86400.0
+            clean_df = df.dropna(subset=['__days_passed__'] + numeric_cols)
+            x_data = clean_df['__days_passed__'].values
+
+            for col in numeric_cols:
+                y_data = clean_df[col].values
+                p0_exp = [np.max(y_data), 0.1] 
+                p0_hl  = [np.max(y_data), 7.0] 
+                col_result = {'Column': col}
+
+                try:
+                    popt_exp, _ = curve_fit(model_exponential, x_data, y_data, p0=p0_exp, maxfev=5000)
+                    A_exp, lambda_fit = popt_exp
+                    y_pred_exp = model_exponential(x_data, *popt_exp)
+                    r2_exp = r2_score(y_data, y_pred_exp)
+                    col_result['Shock_Amplitude'] = A_exp
+                    col_result['Lambda (Exp/Shock)'] = lambda_fit
+                    col_result['R2_Score_Exp'] = r2_exp
+                except Exception as e:
+                    col_result['Lambda (Exp/Shock)'] = None
+                    col_result['Error_Exp'] = str(e)
+
+                try:
+                    popt_hl, _ = curve_fit(model_half_life, x_data, y_data, p0=p0_hl, maxfev=5000)
+                    A_hl, hl_fit = popt_hl
+                    y_pred_hl = model_half_life(x_data, *popt_hl)
+                    r2_hl = r2_score(y_data, y_pred_hl)
+                    col_result['Half_Life_Days'] = hl_fit
+                    col_result['R2_Score_HL'] = r2_hl
+                except Exception as e:
+                    col_result['Half_Life_Days'] = None
+                    col_result['Error_HL'] = str(e)
+                results.append(col_result)
+            return pd.DataFrame(results)
+
+        def process_parquet(input_url, output_csv):
+            local_input = "input.parquet"
+            download_file(input_url, local_input)
+            
+            print(f"Reading {local_input}...")
+            df = pd.read_parquet(local_input)
+            time_col = detect_datetime_column(df)
+            df[time_col] = pd.to_datetime(df[time_col], utc=True)
+            numeric_cols = detect_numeric_columns(df, exclude_cols=[time_col])
+            if not numeric_cols:
+                raise ValueError("No numeric columns found.")
+            results_df = fit_decay_parameters(df, time_col, numeric_cols)
+            os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+            results_df.to_csv(output_csv, index=False)
+            print(f"Parameters saved to {output_csv}")
+
+        if __name__ == "__main__":
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--input_url", type=str, required=True)
+            parser.add_argument("--output_csv", type=str, required=True)
+            args = parser.parse_args()
+            process_parquet(args.input_url, args.output_csv)
+        EOF
+        python3 decay_task.py --input_url "$0" --output_csv "$1"
+    args:
+      - {inputValue: input_url}
+      - {outputPath: output_csv}
