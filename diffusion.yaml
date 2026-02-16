@@ -4,6 +4,8 @@ inputs:
   - {name: model_name, type: String}
   - {name: dataset_name, type: String}
   - {name: config, type: String}
+  - {name: hub_model_id, type: String, default: ""}
+  - {name: hf_token, type: String, default: ""}
 outputs:
   - {name: saved_model, type: Directory}
 implementation:
@@ -15,7 +17,7 @@ implementation:
       - |
         set -e
         echo "Starting pipeline execution."
-        echo "Inputs received: model_name=$0, dataset_name=$1, config=$2"
+        echo "Inputs received: model_name=$0, dataset_name=$1, config=$2, hub_model_id=$4"
         
         echo "Checking for GPU availability..."
         if command -v nvidia-smi >/dev/null 2>&1; then
@@ -25,10 +27,12 @@ implementation:
           echo "GPU detection utility 'nvidia-smi' not found or GPU not available."
         fi
         
-        # Arguments: $0=model_name, $1=dataset_name, $2=config, $3=saved_model_path (output dir)
+        # Arguments: $0=model_name, $1=dataset_name, $2=config, $3=saved_model_path, $4=hub_model_id, $5=hf_token
         export MODEL_NAME="$0"
         export DATASET_NAME="$1"
         export OUTPUT_DIR="$3"
+        export HUB_MODEL_ID="$4"
+        export HF_TOKEN="$5"
         
         echo "Parsing configuration using input: $2"
         
@@ -76,9 +80,14 @@ implementation:
             --learning_rate="$LEARNING_RATE" --lr_scheduler="$LR_SCHEDULER" --lr_warmup_steps="$LR_WARMUP_STEPS" \
             --seed="$SEED" \
             --output_dir="$OUTPUT_DIR" \
-            --validation_prompt="cute dragon creature" --report_to="wandb"
+            --validation_prompt="cute dragon creature" --report_to="wandb" \
+            ${HUB_MODEL_ID:+--push_to_hub} \
+            ${HUB_MODEL_ID:+--hub_model_id="$HUB_MODEL_ID"} \
+            ${HF_TOKEN:+--hub_token="$HF_TOKEN"}
     args:
       - {inputValue: model_name}
       - {inputValue: dataset_name}
       - {inputValue: config}
       - {outputPath: saved_model}
+      - {inputValue: hub_model_id}
+      - {inputValue: hf_token}
