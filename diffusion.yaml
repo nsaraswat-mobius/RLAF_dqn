@@ -33,6 +33,11 @@ implementation:
         export OUTPUT_DIR="$3"
         export HUB_MODEL_ID="$4"
         export HF_TOKEN="$5"
+
+        if [ -n "$HF_TOKEN" ]; then
+          echo "Authenticating with Hugging Face Hub..."
+          huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
+        fi
         
         echo "Parsing configuration using input: $2"
         
@@ -82,8 +87,7 @@ implementation:
             --output_dir="$OUTPUT_DIR" \
             --validation_prompt="cute dragon creature" --report_to="wandb" \
             ${HUB_MODEL_ID:+--push_to_hub} \
-            ${HUB_MODEL_ID:+--hub_model_id="$HUB_MODEL_ID"} \
-            ${HF_TOKEN:+--hub_token="$HF_TOKEN"}
+            ${HUB_MODEL_ID:+--hub_model_id="$HUB_MODEL_ID"}
     args:
       - {inputValue: model_name}
       - {inputValue: dataset_name}
